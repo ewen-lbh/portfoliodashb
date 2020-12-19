@@ -15,7 +15,7 @@ def metadata_keys_presence_map(description: str) -> Dict[str, bool]:
     parsed: dict = yaml.safe_load(_extract_metadata_part(description))
 
     for key in METADATA_KEYS_WORTH_CHECKING:
-        presence_map[key] = key in parsed.keys() and parsed.get(key)
+        presence_map[key] = key in parsed.keys() and parsed.get(key) is not None
 
     if "?" in str(parsed.get("created", "????-??-??")):
         presence_map["created"] = False
