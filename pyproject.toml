@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "portfoliodb-dashboard"
+version = "0.1.0"
+description = "A nice terminal dashboard for your projects, leveraging portfoliodb."
+authors = ["Ewen Le Bihan <hey@ewen.works>"]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+rich = "^9.5.1"
+"ruamel.yaml" = "^0.16.12"
+typer = "^0.3.2"
+pydantic = "^1.7.3"
+
+[tool.poetry.dev-dependencies]
+black = {version = "^20.8b1", allow-prereleases = true}
+rope = "^0.18.0"
+isort = "^5.6.4"
+
+[tool.poetry.scripts]
+portfoliodashb = "main:cli"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
