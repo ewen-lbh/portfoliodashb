@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "portfoliodashb"
-version = "0.1.0"
+version = "0.2.0"
 description = "A nice terminal dashboard for your projects, leveraging portfoliodb."
 authors = ["Ewen Le Bihan <hey@ewen.works>"]
 license = "MIT"
