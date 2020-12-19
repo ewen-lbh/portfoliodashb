@@ -8,11 +8,7 @@ colors:
     secondary:
 
 layout:
-    - p
+    - 
 ---
 
 # Portfoliodb Dashboard
-
-:: fr
-
-:: en

@@ -7,12 +7,15 @@ from rich.table import Column, Table
 from rich.text import Text
 from typer import Argument, Typer
 
-from config import load_config
-from console import console
-from constants import CONFIG_FILEPATH
-from crawler import crawl
-from metadata_parser import (METADATA_KEYS_WORTH_CHECKING,
-                             metadata_keys_presence_map)
+from portfoliodashb.config import load_config
+from portfoliodashb.console import console
+from portfoliodashb.constants import CONFIG_FILEPATH
+from portfoliodashb.crawler import crawl
+from portfoliodashb.metadata_parser import (
+    METADATA_KEYS_WORTH_CHECKING,
+    has_lang,
+    metadata_keys_presence_map,
+)
 
 cli = Typer()
 config = load_config(CONFIG_FILEPATH)
@@ -26,6 +29,8 @@ def health(directory: Path = Argument(None), show_all: bool = False):
         Column("project path"),
         # Column("enabled"),
         *(Column(key) for key in METADATA_KEYS_WORTH_CHECKING),
+        ":: fr",
+        ":: en",
         Column(
             "Quick link to description.md",
         ),
@@ -36,18 +41,29 @@ def health(directory: Path = Argument(None), show_all: bool = False):
         if not portfoliodb_description and not show_all:
             continue
 
+        portfoliodb_description = portfoliodb_description or ""
+
         metadata_presence = {k: False for k in METADATA_KEYS_WORTH_CHECKING}
         if portfoliodb_description:
             metadata_presence = metadata_keys_presence_map(portfoliodb_description)
 
+        in_french = has_lang(portfoliodb_description, "fr")
+        in_english = has_lang(portfoliodb_description, "en")
+        is_done = all(metadata_presence.values()) and in_english and in_french
+
+        if not any(metadata_presence.values()) and not show_all:
+            continue
+
         table.add_row(
-            (f"[red]●[/red] " if not portfoliodb_description else "  ")
+            (f"[red]●[/red] " if not is_done else "  ")
             + f'[link={str(directory / project / ".portfoliodb" / "description.md")}]{project}[/link]',
             # checkmark(portfoliodb_description),
             *(
                 checkmark(metadata_presence[key])
                 for key in METADATA_KEYS_WORTH_CHECKING
             ),
+            checkmark(in_french),
+            checkmark(in_english),
             "[grey]"
             + str(directory / project / ".portfoliodb" / "description.md")
             + "[/grey]",
@@ -96,20 +112,18 @@ colors:
     secondary:
 
 layout:
-    - p
+    - 
 ---
 
 # {project.replace('-', ' ').replace('_', ' ').title()}
-
-:: fr
-
-:: en
 """
             )
             filled_count += 1
     console.print("\n" + "[yellow] ~ [/yellow]" * 5 + "\n")
     if filled_count:
-        console.print(f"Filled [yellow]{filled_count}[/yellow] projects with an empty description.md file")
+        console.print(
+            f"Filled [yellow]{filled_count}[/yellow] projects with an empty description.md file"
+        )
     else:
         console.print(f"Everything's already filled :smile:")
 

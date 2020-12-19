@@ -1,8 +1,8 @@
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from config import load_config
-from constants import CONFIG_FILEPATH
+from portfoliodashb.config import load_config
+from portfoliodashb.constants import CONFIG_FILEPATH
 
 config = load_config(CONFIG_FILEPATH)
 

@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "portfoliodb-dashboard"
+name = "portfoliodashb"
 version = "0.1.0"
 description = "A nice terminal dashboard for your projects, leveraging portfoliodb."
 authors = ["Ewen Le Bihan <hey@ewen.works>"]
@@ -18,7 +18,7 @@ rope = "^0.18.0"
 isort = "^5.6.4"
 
 [tool.poetry.scripts]
-portfoliodashb = "main:cli"
+portfoliodashb = "portfoliodashb.main:cli"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
