@@ -127,6 +127,38 @@ layout:
     else:
         console.print(f"Everything's already filled :smile:")
 
+@cli.command("prune")
+def prune(directory: Path = Argument(None), ignore: List[str] = None):
+    """
+    Removes .portfoliodb/description.md when no checks are passed (everything is "no" on the dashboard entry)
+    """
+    ignore = ignore or []
+    directory = Path(directory or config.projects_directory)
+    pruned_count = 0
+    for project, portfoliodb_description in crawl(directory).items():
+        if not portfoliodb_description:
+            continue
+        metadata_presence = metadata_keys_presence_map(portfoliodb_description)
+        if any(metadata_presence.values()):
+            continue
+        console.print(f"For [blue]{project}[/blue]:")
+        if project in ignore:
+            console.print(f"  -> [red]Ignored[/red] by --ignore")
+            continue
+        
+        console.print(
+            f"  -> Removing file [cyan]{str(directory / project / '.portfoliodb' / 'description.md')}[/cyan]"
+        )
+        (directory / project / ".portfoliodb" / "description.md").unlink()
+        pruned_count += 1
+    console.print("\n" + "[yellow] ~ [/yellow]" * 5 + "\n")
+    if pruned_count:
+        console.print(
+            f"Pruned [yellow]{pruned_count}[/yellow] projects with no valuable description.md file"
+        )
+    else:
+        console.print(f"Everything's fine :smile:")
+
 
 def checkmark(o: Any) -> Text:
     # return ":white_heavy_check_mark" if o else ":cross_mark:"
