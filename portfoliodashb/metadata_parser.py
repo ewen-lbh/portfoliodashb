@@ -4,7 +4,7 @@ from ruamel import yaml
 
 from portfoliodashb.console import console
 
-METADATA_KEYS_WORTH_CHECKING = "created", "made with", "colors", "layout", "tags"
+METADATA_KEYS_WORTH_CHECKING = "created", "made with", "colors", "layout", "tags", "wip"
 
 
 def metadata_keys_presence_map(description: str) -> Dict[str, bool]:
