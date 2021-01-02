@@ -1,7 +1,9 @@
 #!/usr/bin/env python
 
 from pathlib import Path
-from typing import Any, List
+from typing import Any, List, Optional
+import os
+import subprocess
 
 from rich.table import Column, Table
 from rich.text import Text
@@ -159,6 +161,10 @@ def prune(directory: Path = Argument(None), ignore: List[str] = None):
     else:
         console.print(f"Everything's fine :smile:")
 
+@cli.command("edit")
+def edit(project: str, directory: Optional[str] = None):
+    editor = os.getenv("EDITOR", "nano")
+    subprocess.run((editor, Path(directory or config.projects_directory) / project / ".portfoliodb" / "description.md"))
 
 def checkmark(o: Any) -> Text:
     # return ":white_heavy_check_mark" if o else ":cross_mark:"
