@@ -11,6 +11,8 @@ rich = "^9.5.1"
 "ruamel.yaml" = "^0.16.12"
 typer = "^0.3.2"
 pydantic = "^1.7.3"
+PyGithub = "^1.54.1"
+toml = "^0.10.2"
 
 [tool.poetry.dev-dependencies]
 black = {version = "^20.8b1", allow-prereleases = true}
