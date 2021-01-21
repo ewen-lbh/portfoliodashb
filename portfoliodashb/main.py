@@ -7,6 +7,7 @@ from typing import Any, Dict, List, NamedTuple, Optional
 import os
 import subprocess
 import re
+import github
 
 from rich.table import Column, Table
 from rich.text import Text
@@ -22,6 +23,7 @@ from portfoliodashb.metadata_parser import (
     has_lang,
     metadata_keys_presence_map,
 )
+from portfoliodashb import git
 
 cli = Typer()
 config = load_config(CONFIG_FILEPATH)
@@ -230,11 +232,22 @@ class WebDashRow:
     directory: Path
     description: str
     metadata: Dict[str, Any]
+    repo: Optional[git.Repository]
+    ghrepo: Optional[github.Repository]
+    gh: Optional[github.Github]
 
     def __init__(self, directory: Path, description: str) -> None:
         self.directory = directory
         self.description = description
         self.metadata = get_metadata(description)
+        self.gh, self.ghrepo = None, None
+        try:
+            self.repo = git.Repository(self.directory)
+        except git.NoRepoHere:
+            self.repo = None
+        if self.repo and (github_remotes := [ r.removeprefix("https://github.com/").removesuffix("/") for r in self.repo.remotes if r.startswith("https://github.com/") ]):
+            self.gh = github.Github(os.getenv("GHTOK"))
+            self.ghrepo = self.gh.get_repo(github_remotes[0])
         
     @property
     def logo_src(self) -> Path:
@@ -263,7 +276,85 @@ class WebDashRow:
         # draft: has a folder or is "making" column in incubator
         state = "draft"
         # wip: has a portfoliodb description or a GitHub repo
-        if self.description or 
+        if self.description or (self.repo and self.repo.remotes):
+            state = "wip"
+        # done: has a finished date or a wip: true in the portfoliodb description
+        if self.description and (self.metadata.get("finished") or not self.metadata.get("wip", False)):
+            state = "done"
+        
+        return state
+    
+    @property
+    def project_progress(self) -> float:
+        progress = 0.0
+        if self.ghrepo:
+            progress = (
+                self._progress_via_milestones(self.ghrepo.get_milestones(state="open"))
+                or self._progress_via_issues(self.ghrepo.get_issues())
+                or self._progress_via_readme(self.ghrepo.get_readme().content)
+                or 0.0
+            )
+        if not progress:
+            progress = (
+                self._progress_via_readme(self.description)
+                or 0.0
+            )
+        if not progress and (markdown_files := [ f.read_text() for f in self.directory.glob("**/*.{md,mdown,markdown}") ])
+            for markdown_file in markdown_files:
+                if (progress := self._progress_via_readme(markdown_file)):
+                    return progress
+        return 0.0
+
+    def _progress_via_milestones(self, milestones: github.PaginatedList) -> Optional[float]:
+        if not milestones.totalCount:
+            return None
+        if (versions_milestones := [ m for m in milestones if re.match(r"v?(\d+\.){2}\d+", m.title) ]):
+            selected_milestone = sorted(versions_milestones, key=lambda m: version_sort_key(m.title))[0]
+        elif (preferred_milestones := [ m for m in milestones if m.title in ("Make it public", "Make it public!", "Release") ])
+            selected_milestone = preferred_milestones[0]
+        elif milestones.totalCount():
+            selected_milestone = milestones[0]
+        else:
+            return None
+        return selected_milestone.open_issues/(selected_milestone.closed_issues+selected_milestone.open_issues)
+    
+    def _progress_via_issues(self, issues: github.PaginatedList) -> Optional[float]:
+        if not issues.totalCount:
+            return None
+        return len([ i for i in issues if i.state == "open" ]) / issues.totalCount
+    
+    def _progress_via_readme(self, readme: str) -> Optional[float]:
+        done_count = 0
+        todo_count = 0
+        for line in readme.splitlines():
+            if line.strip().startswith("- [ ] "):
+                todo_count += 1
+            elif line.strip().startswith("- [x] "):
+                done_count += 1
+        if not done_count+todo_count:
+            return None
+        return done_count/(todo_count+done_count)
+    
+    @property
+    def latest_version(self) -> Optional[str]:
+        if not self.git:
+            return None
+        versions = [ tag for tag in self.git.tags if re.match(r"v?\d+\.\d+\.\d+", tag) ]
+        if not versions:
+            return None
+        return reversed(sorted(versions, key=version_sort_key))[0]
+    
+    @property
+    def latest_online_version(self) -> Optional[str]:
+        if not self.ghrepo:
+            return None
+        versions = [ tag for tag in self.ghrepo.get_tags() if re.match(r"v?\d+\.\d+\.\d+", tag.name) ]
+        if not versions:
+            return None
+        return reversed(sorted(versions, key=version_sort_key))[0]
+    
+def version_sort_key(version: str) -> list[int, int, int]:
+    return [int(fragment.strip()) for fragment in version.strip('v').split('.')]
 
 
 def create_row(p: WebDashRow) -> str:
