@@ -3,7 +3,7 @@
 from pathlib import Path
 import socketserver
 from http.server import BaseHTTPRequestHandler
-from typing import Any, Dict, List, NamedTuple, Optional
+from typing import Any, Dict, List, NamedTuple, Optional, Union
 import os
 import subprocess
 import re
@@ -215,9 +215,35 @@ def webdash(directory: Optional[str] = None, port: int = 8000):
     server.serve_forever()
 
 
-def create_html(directory: str) -> str:
-    projects = crawl(Path(directory).expanduser())
-    bar = ProgressBar(total=len(projects), width=50)
+def incubator_card_into_project(card: github.ProjectCard.ProjectCard, bar: ProgressBar):
+    pattern = re.compile(r"(?:an?)?\s*(.+)\s*(?:(?:named|called) (\S+)\.?)\s+(.+)")
+    if (match := pattern.match(card.note)) :
+        return WebDashRow(
+            name=match.group(2),
+            directory=None,
+            description=match.group(1) + "\n" * 2 + match.group(3),
+            progress_bar=bar
+        )
+    return None
+
+
+def create_html(directory: Union[str, Path]) -> str:
+    bar = ProgressBar(total=1, width=50)
+    directory = Path(directory).expanduser()
+    projects = [
+        WebDashRow(
+            name=name,
+            description=description or "",
+            directory=directory / name,
+            progress_bar=bar,
+        )
+        for name, description in crawl(directory).items()
+    ]
+    project_by_name = {p.name: p for p in GH.get_user("ewen-lbh").get_projects()}
+    for card in project_by_name["incubator"].get_columns()[1].get_cards():
+        if (project := incubator_card_into_project(card, bar)) :
+            projects.append(project)
+    bar.total = len(projects)
     NEWLINE = "\n"  # f-string expressions cannot contain backslashes
     # Setup columns
     columns = [
@@ -247,7 +273,7 @@ def create_html(directory: str) -> str:
 <body><em>In directory <code>{directory}</code></em>
     <table>
         <tr>{''.join('<th>' + column + '</th>' for column in columns)}</tr>
-        {NEWLINE.join([ create_row(name, description, bar) for name, description in projects.items() ])}
+        {NEWLINE.join([ create_row(project, bar) for project in projects ])}
     </table>
 </body>
 
@@ -255,28 +281,40 @@ def create_html(directory: str) -> str:
 
     return html
 
+
 GH = github.Github(os.getenv("GHTOK"))
 
+
 class WebDashRow:
-    directory: Path
+    directory: Optional[Path]
     description: str
     metadata: Dict[str, Any]
     repo: Optional[git.Repository]
     ghrepo: Optional[github.Repository.Repository]
-    progress_bar: Optional[ProgressBar]
+    progress_bar: ProgressBar
+    project_name: str
 
-    def __init__(self, directory: Path, description: str, progress_bar: Optional[ProgressBar] = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        directory: Optional[Path],
+        description: str,
+        progress_bar: ProgressBar,
+    ) -> None:
+        self.project_name = name
         self.directory = directory
         self.description = description
         self.ghrepo = None
+        self.repo = None
         self.progress_bar = progress_bar
         self.metadata = {}
         if self.description:
-            self.metadata = get_metadata(description)
-        try:
-            self.repo = git.Repository(self.directory)
-        except git.NoRepoHere:
-            self.repo = None
+            self.metadata = get_metadata(description) or {}
+        if self.directory:
+            try:
+                self.repo = git.Repository(self.directory)
+            except git.NoRepoHere:
+                self.repo = None
         if self.repo and (
             github_remotes := [
                 r.removeprefix("https://github.com/").removesuffix("/")
@@ -285,24 +323,27 @@ class WebDashRow:
             ]
         ):
             try:
-                self.status("Loading the Github repo")
                 self.ghrepo = GH.get_repo(github_remotes[0])
             except github.GithubException:
                 self.ghrepo = None
-        
+
         self.p("__init__", directory)
 
     def status(self, *args):
-        self.progress_bar.text = f"{self.project_name}: {' '.join([str(arg) for arg in args])}" 
-    
+        self.progress_bar.text = (
+            f"{self.project_name}: {' '.join([str(arg) for arg in args])}"
+        )
+
     def p(self, *args, **kwargs):
         self.progress_bar.print(*args, **kwargs)
 
     @property
-    def logo_src(self) -> Path:
+    def logo_src(self) -> Optional[Path]:
         self.status("Resolving the logo source")
         self.p("logo_src", self.project_name)
         self.p("logo_src", "try_logo.png")
+        if not self.directory:
+            return None
         if (logo := self.directory / "logo.png").exists():
             return logo
         self.p("logo_src", "try_visual_identity")
@@ -321,15 +362,15 @@ class WebDashRow:
         return Path(__file__) / ".." / "assets" / "default_logo.png"
 
     @property
-    def project_name(self) -> str:
-        return self.directory.name
-
-    @property
     def is_contribution(self) -> bool:
         self.status("Getting contribution state")
         if self.ghrepo:
             self.p("is_contribution", "owner_is", self.ghrepo.owner.login)
-            return self.metadata.get("contribution", False) or self.ghrepo.owner.login not in ["ewen-lbh"] + [ org.login for org in GH.get_user("ewen-lbh").get_orgs() ]
+            return self.metadata.get(
+                "contribution", False
+            ) or self.ghrepo.owner.login not in ["ewen-lbh"] + [
+                org.login for org in GH.get_user("ewen-lbh").get_orgs()
+            ]
         return self.metadata.get("contribution", False)
 
     @property
@@ -337,7 +378,8 @@ class WebDashRow:
         self.status("Computing project state")
         state: str
         # seed: has just an incubator entry (option to only show "will make" or also "not sure")
-        # TODO
+        if not self.directory:
+            return "seed"
         # draft: has a folder or is "making" column in incubator
         state = "draft"
         # wip: has a portfoliodb description or a GitHub repo
@@ -352,10 +394,12 @@ class WebDashRow:
         return state
 
     @property
-    def project_progress(self) -> float:
+    def project_progress(self) -> Optional[float]:
         self.status("Computing project progress")
         self.p("project_progress", self.project_name)
-        progress = 0.0
+        if not self.directory:
+            return None
+        progress = None
         if self.ghrepo:
             self.p("project_progress", "has_gh")
             readme = str()
@@ -367,7 +411,6 @@ class WebDashRow:
                 self._progress_via_milestones(self.ghrepo.get_milestones(state="open"))
                 or self._progress_via_issues(self.ghrepo.get_issues())
                 or self._progress_via_readme(readme)
-                or 0.0
             )
             self.p("project_progress", "with_github", progress)
         if not progress:
@@ -412,7 +455,13 @@ class WebDashRow:
         else:
             return None
         self.p("project_progress", "via_milestones", "selected", selected_milestone)
-        self.p("project_progress", "via_milestones", "verdict", selected_milestone.open_issues/(selected_milestone.closed_issues + selected_milestone.open_issues))
+        self.p(
+            "project_progress",
+            "via_milestones",
+            "verdict",
+            selected_milestone.open_issues
+            / (selected_milestone.closed_issues + selected_milestone.open_issues),
+        )
         return selected_milestone.open_issues / (
             selected_milestone.closed_issues + selected_milestone.open_issues
         )
@@ -421,8 +470,18 @@ class WebDashRow:
         self.p("project_progress", "via_issues")
         if not issues.totalCount:
             return None
-        self.p("project_progress", "via_issues", "open_issues_count", len([i for i in issues if i.state == "open"]))
-        self.p("project_progress", "via_issues", "verdict", len([i for i in issues if i.state == "open"]) / issues.totalCount)
+        self.p(
+            "project_progress",
+            "via_issues",
+            "open_issues_count",
+            len([i for i in issues if i.state == "open"]),
+        )
+        self.p(
+            "project_progress",
+            "via_issues",
+            "verdict",
+            len([i for i in issues if i.state == "open"]) / issues.totalCount,
+        )
         return len([i for i in issues if i.state == "open"]) / issues.totalCount
 
     def _progress_via_readme(self, readme: Optional[str]) -> Optional[float]:
@@ -440,7 +499,12 @@ class WebDashRow:
                 done_count += 1
         if not done_count + todo_count:
             return None
-        self.p("project_progress", "via_readme", "verdict", done_count / (todo_count + done_count))
+        self.p(
+            "project_progress",
+            "via_readme",
+            "verdict",
+            done_count / (todo_count + done_count),
+        )
         return done_count / (todo_count + done_count)
 
     @property
@@ -483,13 +547,16 @@ class WebDashRow:
 
     @property
     def github_url(self) -> Optional[str]:
+        project_by_name = {p.name: p for p in GH.get_user("ewen-lbh").get_projects()}
+        if self.project_state == "seed":
+            return project_by_name["incubator"].html_url
         if not self.ghrepo:
             return None
         return self.ghrepo.url
 
     @property
     def project_path(self) -> Optional[str]:
-        return str(self.directory)
+        return str(self.directory) if self.directory else None
 
 
 def version_sort_key(version: str) -> Version:
@@ -499,10 +566,8 @@ def version_sort_key(version: str) -> Version:
         return Version("0.0.0")
 
 
-def create_row(name: str, description: Optional[str], bar: ProgressBar) -> str:
-    bar.text = f"{name}: "
-    bar.print("create_row", name)
-    p = WebDashRow(Path("~/projects").expanduser() / name, description, progress_bar=bar)
+def create_row(p: WebDashRow, bar: ProgressBar) -> str:
+    bar.text = f"{p.project_name}: "
     bar.advance()
     return (
         "<tr>"
@@ -510,12 +575,12 @@ def create_row(name: str, description: Optional[str], bar: ProgressBar) -> str:
         f"<td>{p.project_name}"
         f"<td>{p.is_contribution}"
         f"<td>{p.project_state}"
-        f"<td>{p.project_progress}"
+        f"<td>{p.project_progress or ''}"
         f'<td>{p.latest_version or ""}'
         f'<td>{p.latest_published_version or ""}'
-        f'<td>{", ".join(p.made_with or [])}'
-        f'<td>{", ".join(p.tags or [])}'
-        f'<td>{p.github_url or ""}'
+        f'<td><ul><li>{"</li><li>".join(p.made_with or [])}</li></ul>'
+        f'<td><ul><li>{"</li><li>".join(p.tags or [])}</li></ul>'
+        f'<td><a href="{p.github_url}">{p.github_url}</a>'
         f"<td>{p.project_path}"
     )
 
