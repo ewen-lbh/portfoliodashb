@@ -152,3 +152,6 @@ dmypy.json
 
 # node_modules
 node_modules/
+
+# vscode's settings, because the python.pythonPath is here and it's driving me crazy
+.vscode/settings.json
