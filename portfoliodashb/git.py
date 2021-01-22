@@ -42,6 +42,6 @@ class Repository:
         Returns (status, stdout, stderr)
         """
         if command[0] != "git":
-            command = ["git"] + command
-        output = subprocess.run(command, capture_output=True, encoding='utf-8')
+            command = ["git"] + list(command)
+        output = subprocess.run(command, capture_output=True, encoding='utf-8', cwd=self.directory)
         return output.returncode, output.stdout, output.stderr

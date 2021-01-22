@@ -12,18 +12,20 @@ import github
 from rich.table import Column, Table
 from rich.text import Text
 from typer import Argument, Typer
-
+from semantic_version import Version
 
 from portfoliodashb.config import load_config
 from portfoliodashb.console import console
 from portfoliodashb.constants import CONFIG_FILEPATH
 from portfoliodashb.crawler import crawl
 from portfoliodashb.metadata_parser import (
-    METADATA_KEYS_WORTH_CHECKING, get_metadata,
+    METADATA_KEYS_WORTH_CHECKING,
+    get_metadata,
     has_lang,
     metadata_keys_presence_map,
 )
 from portfoliodashb import git
+from portfoliodashb.progressbar import ProgressBar
 
 cli = Typer()
 config = load_config(CONFIG_FILEPATH)
@@ -135,6 +137,7 @@ layout:
     else:
         console.print(f"Everything's already filled :smile:")
 
+
 @cli.command("prune")
 def prune(directory: Path = Argument(None), ignore: List[str] = None):
     """
@@ -153,7 +156,7 @@ def prune(directory: Path = Argument(None), ignore: List[str] = None):
         if project in ignore:
             console.print(f"  -> [red]Ignored[/red] by --ignore")
             continue
-        
+
         console.print(
             f"  -> Removing file [cyan]{str(directory / project / '.portfoliodb' / 'description.md')}[/cyan]"
         )
@@ -167,30 +170,55 @@ def prune(directory: Path = Argument(None), ignore: List[str] = None):
     else:
         console.print(f"Everything's fine :smile:")
 
+
 @cli.command("edit")
 def edit(project: str, directory: Optional[str] = None):
     editor = os.getenv("EDITOR", "nano")
-    subprocess.run((editor, Path(directory or config.projects_directory) / project / ".portfoliodb" / "description.md"))
+    subprocess.run(
+        (
+            editor,
+            Path(directory or config.projects_directory)
+            / project
+            / ".portfoliodb"
+            / "description.md",
+        )
+    )
+
 
 @cli.command("web")
 def webdash(directory: Optional[str] = None, port: int = 8000):
+    with open(
+        Path(__file__).parent.parent / "dist" / "index.html", "w", encoding="utf-8"
+    ) as file:
+        file.write(create_html(directory or config.projects_directory))
+    subprocess.run(
+        ["xdg-open", str(Path(__file__).parent.parent / "dist" / "index.html")]
+    )
+
     class WebdashServer(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path != "/":
                 self.send_error(404, "Not Found")
                 return
-            
+
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
 
-            self.wfile.write(bytes(create_html(directory or config.projects_directory), "utf-8"))
-            
+            self.wfile.write(
+                bytes(create_html(directory or config.projects_directory), "utf-8")
+            )
+
             return
+
     server = socketserver.TCPServer(("", port), WebdashServer)
     server.serve_forever()
 
+
 def create_html(directory: str) -> str:
+    projects = crawl(Path(directory).expanduser())
+    bar = ProgressBar(total=len(projects), width=50)
+    NEWLINE = "\n"  # f-string expressions cannot contain backslashes
     # Setup columns
     columns = [
         "logo",
@@ -205,7 +233,7 @@ def create_html(directory: str) -> str:
         "github repo",
         "project path",
     ]
-    html = f'''
+    html = f"""
 <!DOCTYPE html>
 <html lang="en">
 
@@ -219,57 +247,91 @@ def create_html(directory: str) -> str:
 <body><em>In directory <code>{directory}</code></em>
     <table>
         <tr>{''.join('<th>' + column + '</th>' for column in columns)}</tr>
-        <!-- {{\n.join([ create_row(row) for row in projects ])}} -->
+        {NEWLINE.join([ create_row(name, description, bar) for name, description in projects.items() ])}
         <code>{os.getenv("GHTOK")}</code>
     </table>
 </body>
 
-</html>'''
+</html>"""
 
     return html
+
+GH = github.Github(os.getenv("GHTOK"))
 
 class WebDashRow:
     directory: Path
     description: str
     metadata: Dict[str, Any]
     repo: Optional[git.Repository]
-    ghrepo: Optional[github.Repository]
-    gh: Optional[github.Github]
+    ghrepo: Optional[github.Repository.Repository]
+    progress_bar: Optional[ProgressBar]
 
-    def __init__(self, directory: Path, description: str) -> None:
+    def __init__(self, directory: Path, description: str, progress_bar: Optional[ProgressBar] = None) -> None:
         self.directory = directory
         self.description = description
-        self.metadata = get_metadata(description)
-        self.gh, self.ghrepo = None, None
+        self.ghrepo = None
+        self.progress_bar = progress_bar
+        self.metadata = {}
+        if self.description:
+            self.metadata = get_metadata(description)
         try:
             self.repo = git.Repository(self.directory)
         except git.NoRepoHere:
             self.repo = None
-        if self.repo and (github_remotes := [ r.removeprefix("https://github.com/").removesuffix("/") for r in self.repo.remotes if r.startswith("https://github.com/") ]):
-            self.gh = github.Github(os.getenv("GHTOK"))
-            self.ghrepo = self.gh.get_repo(github_remotes[0])
+        if self.repo and (
+            github_remotes := [
+                r.removeprefix("https://github.com/").removesuffix("/")
+                for r in self.repo.remotes
+                if r.startswith("https://github.com/")
+            ]
+        ):
+            try:
+                self.status("Loading the Github repo")
+                self.ghrepo = GH.get_repo(github_remotes[0])
+            except github.GithubException:
+                self.ghrepo = None
         
+        self.p("__init__", directory)
+
+    def status(self, *args):
+        self.progress_bar.text = f"{self.project_name}: {' '.join([str(arg) for arg in args])}" 
+    
+    def p(self, *args, **kwargs):
+        self.progress_bar.print(*args, **kwargs)
+
     @property
     def logo_src(self) -> Path:
+        self.status("Resolving the logo source")
+        self.p("logo_src", self.project_name)
+        self.p("logo_src", "try_logo.png")
         if (logo := self.directory / "logo.png").exists():
             return logo
+        self.p("logo_src", "try_visual_identity")
         if (logo := self.directory / "visual-identity" / "logo.png").exists():
             return logo
         if self.description:
-            if (match := re.match(r"[!>]\[[^\]]+\]\(([^\).]+\.(?:png|jpe?g|webp))\)", self.description)):
+            self.p("logo_src", "try_from_description")
+            if (
+                match := re.match(
+                    r"[!>]\[[^\]]+\]\(([^\).]+\.(?:png|jpe?g|webp))\)", self.description
+                )
+            ) :
+                self.p("logo_src", "found_match", match.group(1))
                 return self.directory / Path(match.group(1))
+        self.p("logo_src", "use_fallback")
         return Path(__file__) / ".." / "assets" / "default_logo.png"
-    
+
     @property
     def project_name(self) -> str:
         return self.directory.name
-    
+
     @property
     def is_contribution(self) -> bool:
         return self.metadata.get("contribution", False)
-    
+
     @property
     def project_state(self) -> str:
+        self.status("Computing project state")
         state: str
         # seed: has just an incubator entry (option to only show "will make" or also "not sure")
         # TODO
@@ -279,98 +341,178 @@ class WebDashRow:
         if self.description or (self.repo and self.repo.remotes):
             state = "wip"
         # done: has a finished date or a wip: true in the portfoliodb description
-        if self.description and (self.metadata.get("finished") or not self.metadata.get("wip", False)):
+        if self.description and (
+            self.metadata.get("finished") or not self.metadata.get("wip", False)
+        ):
             state = "done"
-        
+
         return state
-    
+
     @property
     def project_progress(self) -> float:
+        self.status("Computing project progress")
+        self.p("project_progress", self.project_name)
         progress = 0.0
         if self.ghrepo:
+            self.p("project_progress", "has_gh")
+            readme = str()
+            try:
+                readme = self.ghrepo.get_readme().content
+            except github.GithubException:
+                pass
             progress = (
                 self._progress_via_milestones(self.ghrepo.get_milestones(state="open"))
                 or self._progress_via_issues(self.ghrepo.get_issues())
-                or self._progress_via_readme(self.ghrepo.get_readme().content)
+                or self._progress_via_readme(readme)
                 or 0.0
             )
+            self.p("project_progress", "with_github", progress)
         if not progress:
-            progress = (
-                self._progress_via_readme(self.description)
-                or 0.0
-            )
-        if not progress and (markdown_files := [ f.read_text() for f in self.directory.glob("**/*.{md,mdown,markdown}") ])
+            progress = self._progress_via_readme(self.description) or 0.0
+        if not progress and (
+            markdown_files := [
+                f.read_text() for f in self.directory.glob("**/*.{md,mdown,markdown}")
+            ]
+        ):
             for markdown_file in markdown_files:
-                if (progress := self._progress_via_readme(markdown_file)):
+                if (progress := self._progress_via_readme(markdown_file)) :
+                    self.p("project_progress", "with_local", progress)
                     return progress
-        return 0.0
+        return progress
 
-    def _progress_via_milestones(self, milestones: github.PaginatedList) -> Optional[float]:
+    def _progress_via_milestones(
+        self, milestones: github.PaginatedList
+    ) -> Optional[float]:
+        self.p("project_progress", "via_milestones")
         if not milestones.totalCount:
             return None
-        if (versions_milestones := [ m for m in milestones if re.match(r"v?(\d+\.){2}\d+", m.title) ]):
-            selected_milestone = sorted(versions_milestones, key=lambda m: version_sort_key(m.title))[0]
-        elif (preferred_milestones := [ m for m in milestones if m.title in ("Make it public", "Make it public!", "Release") ])
+        if milestones.totalCount == 1:
+            selected_milestone = milestones[0]
+        elif (
+            versions_milestones := [
+                m for m in milestones if re.match(r"v?(\d+\.){2}\d+", m.title)
+            ]
+        ) :
+            selected_milestone = sorted(
+                versions_milestones, key=lambda m: version_sort_key(m.title)
+            )[0]
+        elif (
+            preferred_milestones := [
+                m
+                for m in milestones
+                if m.title in ("Make it public", "Make it public!", "Release")
+            ]
+        ) :
             selected_milestone = preferred_milestones[0]
-        elif milestones.totalCount():
+        elif milestones.totalCount:
             selected_milestone = milestones[0]
         else:
             return None
-        return selected_milestone.open_issues/(selected_milestone.closed_issues+selected_milestone.open_issues)
-    
+        self.p("project_progress", "via_milestones", "selected", selected_milestone)
+        self.p("project_progress", "via_milestones", "verdict", selected_milestone.open_issues/(selected_milestone.closed_issues + selected_milestone.open_issues))
+        return selected_milestone.open_issues / (
+            selected_milestone.closed_issues + selected_milestone.open_issues
+        )
+
     def _progress_via_issues(self, issues: github.PaginatedList) -> Optional[float]:
+        self.p("project_progress", "via_issues")
         if not issues.totalCount:
             return None
-        return len([ i for i in issues if i.state == "open" ]) / issues.totalCount
-    
-    def _progress_via_readme(self, readme: str) -> Optional[float]:
+        self.p("project_progress", "via_issues", "open_issues_count", len([i for i in issues if i.state == "open"]))
+        self.p("project_progress", "via_issues", "verdict", len([i for i in issues if i.state == "open"]) / issues.totalCount)
+        return len([i for i in issues if i.state == "open"]) / issues.totalCount
+
+    def _progress_via_readme(self, readme: Optional[str]) -> Optional[float]:
+        self.p("project_progress", "via_readme")
         done_count = 0
         todo_count = 0
+        if not readme:
+            return None
         for line in readme.splitlines():
             if line.strip().startswith("- [ ] "):
+                self.p("project_progress", "via_readme", "found_todo")
                 todo_count += 1
             elif line.strip().startswith("- [x] "):
+                self.p("project_progress", "via_readme", "found_done")
                 done_count += 1
-        if not done_count+todo_count:
+        if not done_count + todo_count:
             return None
-        return done_count/(todo_count+done_count)
-    
+        self.p("project_progress", "via_readme", "verdict", done_count / (todo_count + done_count))
+        return done_count / (todo_count + done_count)
+
     @property
     def latest_version(self) -> Optional[str]:
-        if not self.git:
+        self.status("Computing latest version number")
+        self.p("latest_version", self.project_name)
+        if not self.repo:
             return None
-        versions = [ tag for tag in self.git.tags if re.match(r"v?\d+\.\d+\.\d+", tag) ]
+        versions = [tag for tag in self.repo.tags if re.match(r"v?\d+\.\d+\.\d+", tag)]
+        self.p("latest_version", "got_tags", versions)
         if not versions:
             return None
-        return reversed(sorted(versions, key=version_sort_key))[0]
-    
+        return list(reversed(sorted(versions, key=version_sort_key)))[0]
+
     @property
-    def latest_online_version(self) -> Optional[str]:
+    def latest_published_version(self) -> Optional[str]:
+        self.status("Computing latest published version number")
+        self.p("latest_published_version", self.project_name)
         if not self.ghrepo:
             return None
-        versions = [ tag for tag in self.ghrepo.get_tags() if re.match(r"v?\d+\.\d+\.\d+", tag.name) ]
+        versions = [
+            tag
+            for tag in self.ghrepo.get_tags()
+            if re.match(r"v?\d+\.\d+\.\d+", tag.name)
+        ]
+        self.p("latest_published_version", "got_tags", versions)
         if not versions:
             return None
-        return reversed(sorted(versions, key=version_sort_key))[0]
-    
+        return list(
+            reversed(sorted(versions, key=lambda tag: version_sort_key(tag.name)))
+        )[0].name
+
+    @property
+    def made_with(self) -> Optional[str]:
+        return self.metadata.get("made with")
+
+    @property
+    def tags(self) -> Optional[str]:
+        return self.metadata.get("tags")
+
+    @property
+    def github_url(self) -> Optional[str]:
+        if not self.ghrepo:
+            return None
+        return self.ghrepo.url
+
+    @property
+    def project_path(self) -> Optional[str]:
+        return str(self.directory)
+
+
 def version_sort_key(version: str) -> list[int, int, int]:
-    return [int(fragment.strip()) for fragment in version.strip('v').split('.')]
+    return Version(version.strip("v"))
 
 
-def create_row(p: WebDashRow) -> str:
-    return ("<tr>"
+def create_row(name: str, description: Optional[str], bar: ProgressBar) -> str:
+    bar.text = f"{name}: "
+    bar.print("create_row", name)
+    p = WebDashRow(Path("~/projects").expanduser() / name, description, progress_bar=bar)
+    bar.advance()
+    return (
+        "<tr>"
         f'<td><img src="{p.logo_src}"/>'
-        f'<td>{p.project_name}'
-        f'<td>{p.is_contribution}'
-        f'<td>{p.progress_state}'
-        f'<td>{p.progress_status}'
-        f'<td>{p.latest_version}'
-        f'<td>{p.latest_published_version}'
-        f'<td>{p.made_with}'
-        f'<td>{p.tags}'
-        f'<td>{p.github_url}'
-        f'<td>{p.project_path}'
+        f"<td>{p.project_name}"
+        f"<td>{p.is_contribution}"
+        f"<td>{p.project_state}"
+        f"<td>{p.project_progress}"
+        f'<td>{p.latest_version or ""}'
+        f'<td>{p.latest_published_version or ""}'
+        f'<td>{", ".join(p.made_with or [])}'
+        f'<td>{", ".join(p.tags or [])}'
+        f'<td>{p.github_url or ""}'
+        f"<td>{p.project_path}"
     )
+
 
 def checkmark(o: Any) -> Text:
     # return ":white_heavy_check_mark" if o else ":cross_mark:"
