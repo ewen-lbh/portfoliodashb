@@ -248,7 +248,6 @@ def create_html(directory: str) -> str:
     <table>
         <tr>{''.join('<th>' + column + '</th>' for column in columns)}</tr>
         {NEWLINE.join([ create_row(name, description, bar) for name, description in projects.items() ])}
-        <code>{os.getenv("GHTOK")}</code>
     </table>
 </body>
 
@@ -327,6 +326,10 @@ class WebDashRow:
 
     @property
     def is_contribution(self) -> bool:
+        self.status("Getting contribution state")
+        if self.ghrepo:
+            self.p("is_contribution", "owner_is", self.ghrepo.owner.login)
+            return self.metadata.get("contribution", False) or self.ghrepo.owner.login not in ["ewen-lbh"] + [ org.login for org in GH.get_user("ewen-lbh").get_orgs() ]
         return self.metadata.get("contribution", False)
 
     @property
@@ -489,8 +492,11 @@ class WebDashRow:
         return str(self.directory)
 
 
-def version_sort_key(version: str) -> list[int, int, int]:
-    return Version(version.strip("v"))
+def version_sort_key(version: str) -> Version:
+    try:
+        return Version(version.strip("v"))
+    except ValueError:
+        return Version("0.0.0")
 
 
 def create_row(name: str, description: Optional[str], bar: ProgressBar) -> str:
