@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Any, Dict
 
 from ruamel import yaml
 
@@ -6,13 +6,15 @@ from portfoliodashb.console import console
 
 METADATA_KEYS_WORTH_CHECKING = "created", "made with", "colors", "layout", "tags", "wip"
 
+def get_metadata(description: str) -> Dict[str, Any]:
+    return yaml.safe_load(_extract_metadata_part(description))
 
 def metadata_keys_presence_map(description: str) -> Dict[str, bool]:
     """
     Parses the top of a description.md file's contents (the YAML portion).
     """
     presence_map = dict()
-    parsed: dict = yaml.safe_load(_extract_metadata_part(description))
+    parsed: dict = get_metadata(description)
 
     for key in METADATA_KEYS_WORTH_CHECKING:
         presence_map[key] = key in parsed.keys() and parsed.get(key) is not None
